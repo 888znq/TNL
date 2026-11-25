@@ -1,4 +1,4 @@
-name: Sync Repo to Google Drive (TNL_LIVE)
+name: Sync Repo to Google Drive
 
 on:
   push:
@@ -15,27 +15,36 @@ jobs:
       - name: Push files to Drive
         env:
           DRIVE_SYNC_URL: ${{ secrets.DRIVE_SYNC_URL }}
+          REPO_NAME: ${{ github.event.repository.name }}
           COMMIT_SHA: ${{ github.sha }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           node -e '
             const fs = require("fs");
+            const path = require("path");
 
-            const TRACKED = [
-              { path: "server.js",         drive: "TNL_server.js.txt",         protected: false },
-              { path: "scanner.js",        drive: "TNL_scanner.js.txt",        protected: false },
-              { path: "trader.js",         drive: "TNL_trader.js.txt",         protected: false },
-              { path: "settings.js",       drive: "TNL_settings.js.txt",       protected: false },
-              { path: "public/index.html", drive: "TNL_index.html.txt",        protected: false },
-              { path: "package.json",      drive: "TNL_package.json.txt",      protected: false },
-              { path: "devpatch.js",       drive: "TNL_devpatch.js.txt",       protected: true  },
-              { path: "supervisor.js",     drive: "TNL_supervisor.js.txt",     protected: true  },
-              { path: "public/dev.html",   drive: "TNL_dev.html.txt",          protected: true  }
-            ];
+            const REPO = process.env.REPO_NAME;
+            const SKIP_DIRS = new Set([".git", ".github", "node_modules"]);
+            const ALLOWED_EXT = new Set([".html", ".htm", ".js", ".css", ".json", ".md", ".txt", ".py", ".sh", ".yml", ".yaml"]);
+
+            function walk(dir, base = "") {
+              let results = [];
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (SKIP_DIRS.has(entry.name)) continue;
+                const full = path.join(dir, entry.name);
+                const rel = base ? base + "/" + entry.name : entry.name;
+                if (entry.isDirectory()) {
+                  results = results.concat(walk(full, rel));
+                } else if (ALLOWED_EXT.has(path.extname(entry.name).toLowerCase())) {
+                  results.push(rel);
+                }
+              }
+              return results;
+            }
 
             const files = [];
             const manifestLines = [
-              "TNL LIVE MANIFEST",
+              REPO + " LIVE MANIFEST",
               "====================",
               "Commit: " + (process.env.COMMIT_SHA || "").slice(0, 12),
               "Message: " + String(process.env.COMMIT_MSG || "manual sync").split("\n")[0],
@@ -44,18 +53,15 @@ jobs:
               "FILES:"
             ];
 
-            for (const f of TRACKED) {
-              if (!fs.existsSync(f.path)) continue;
-              const content = fs.readFileSync(f.path, "utf8").replace(/\r\n/g, "\n");
+            for (const rel of walk(".")) {
+              const content = fs.readFileSync(rel, "utf8").replace(/\r\n/g, "\n");
               const lines = content.split("\n").length;
-              files.push({ name: f.drive, content });
-              manifestLines.push(
-                "- " + f.path + " -> " + f.drive + " (" + lines + " lines, " + content.length + " chars)" +
-                (f.protected ? " [PROTECTED - GIT ONLY]" : "")
-              );
+              const driveName = REPO + "_" + rel.replace(/\//g, "_") + ".txt";
+              files.push({ name: driveName, content });
+              manifestLines.push("- " + rel + " -> " + driveName + " (" + lines + " lines, " + content.length + " chars)");
             }
 
-            files.unshift({ name: "TNL_INDEX.txt", content: manifestLines.join("\n") + "\n" });
+            files.unshift({ name: REPO + "_INDEX.txt", content: manifestLines.join("\n") + "\n" });
 
             (async () => {
               const res = await fetch(process.env.DRIVE_SYNC_URL, {
